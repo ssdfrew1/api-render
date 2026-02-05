@@ -1,85 +1,55 @@
 import os
 import asyncio
-import httpx
-from datetime import datetime
+from fastapi import FastAPI
+import uvicorn
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
 from huggingface_hub import AsyncInferenceClient
 
-# --- НАСТРОЙКИ ---
+# Данные
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
-# Сюда вставь свою ссылку от Render после первого деплоя
-RENDER_URL = "https://api-render-ssdf.onrender.com/" 
 
+# Инициализация
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-
-# Модель Qwen 2.5 72B — мощная, бесплатная на HF и идеально знает русский
 client = AsyncInferenceClient("Qwen/Qwen2.5-72B-Instruct", token=HF_TOKEN)
+app = FastAPI()
 
-# --- ФУНКЦИЯ КИП-АЛАЙВ (ЧТОБЫ НЕ СПАЛ) ---
-async def keep_alive():
-    async with httpx.AsyncClient() as http_client:
-        while True:
-            try:
-                await http_client.get(RENDER_URL)
-                print(f"[{datetime.now()}] Self-ping successful")
-            except Exception as e:
-                print(f"[{datetime.now()}] Self-ping failed: {e}")
-            await asyncio.sleep(600)  # Пинг раз в 10 минут
+@app.get("/")
+async def health_check():
+    return {"status": "ok"}
 
-# --- ОБРАБОТКА КОМАНД ---
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    await message.answer("Я жив! Твой личный ИИ на базе Hugging Face готов к работе. Пиши любой вопрос.")
-
-# --- ОБРАБОТКА СООБЩЕНИЙ ---
 @dp.message()
 async def chat_handler(message: types.Message):
-    if not message.text:
-        return
-
-    # Отправляем временный статус
-    status_msg = await message.answer("🤖 Печатает...")
-
+    if not message.text: return
+    msg = await message.answer("🤖 Секунду...")
     try:
         response_text = ""
-        
-        # 1. Сначала дожидаемся (await) создания самого потока
+        # Исправленный вызов (сначала await, потом async for)
         stream = await client.chat_completion(
             messages=[
-                {"role": "system", "content": "Ты — крутой и остроумный ИИ-помощник. Отвечай всегда на русском языке."},
+                {"role": "system", "content": "Ты — крутой ИИ-кодер. Отвечай на русском."},
                 {"role": "user", "content": message.text}
             ],
-            max_tokens=1000,
-            stream=True
+            max_tokens=1000, stream=True
         )
-
-        # 2. Теперь перебираем токены из этого потока
         async for token in stream:
-            chunk = token.choices[0].delta.content or ""
-            response_text += chunk
-
-        # 3. Финальный ответ пользователю
-        if response_text.strip():
-            await status_msg.edit_text(response_text)
-        else:
-            await status_msg.edit_text("Модель промолчала... Попробуй другой вопрос.")
-
+            response_text += token.choices[0].delta.content or ""
+        
+        await msg.edit_text(response_text if response_text.strip() else "Пустой ответ.")
     except Exception as e:
-        await status_msg.edit_text(f"❌ Ошибка нейронки: {e}")
+        await msg.edit_text(f"Ошибка: {e}")
 
-# --- ЗАПУСК ---
-async def main():
-    print("Бот запускается...")
-    # Запускаем пинг в фоновом режиме
-    asyncio.create_task(keep_alive())
-    # Запускаем бота
+async def run_bot():
+    print("Запуск бота...")
     await dp.start_polling(bot)
 
+@app.on_event("startup")
+async def startup_event():
+    # Запускаем бота как фоновую задачу, чтобы не блокировать порт
+    asyncio.create_task(run_bot())
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("Бот остановлен")
+    # Запускаем сервер ПЕРВЫМ. Порт 10000 — стандарт для Render
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
