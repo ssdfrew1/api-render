@@ -45,23 +45,27 @@ async def chat_handler(message: types.Message):
 
     try:
         response_text = ""
-        # Стриминг ответа от модели
-        async for token in client.chat_completion(
+        
+        # 1. Сначала дожидаемся (await) создания самого потока
+        stream = await client.chat_completion(
             messages=[
                 {"role": "system", "content": "Ты — крутой и остроумный ИИ-помощник. Отвечай всегда на русском языке."},
                 {"role": "user", "content": message.text}
             ],
             max_tokens=1000,
             stream=True
-        ):
+        )
+
+        # 2. Теперь перебираем токены из этого потока
+        async for token in stream:
             chunk = token.choices[0].delta.content or ""
             response_text += chunk
 
-        # Редактируем сообщение финальным текстом
+        # 3. Финальный ответ пользователю
         if response_text.strip():
             await status_msg.edit_text(response_text)
         else:
-            await status_msg.edit_text("Модель прислала пустой ответ. Попробуй еще раз.")
+            await status_msg.edit_text("Модель промолчала... Попробуй другой вопрос.")
 
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка нейронки: {e}")
