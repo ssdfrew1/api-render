@@ -1,57 +1,81 @@
 import os
 import asyncio
-import uuid
-import json
+import httpx
 from datetime import datetime
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from aiogram import Bot, Dispatcher, types
-import g4f
+from aiogram.filters import Command
+from huggingface_hub import AsyncInferenceClient
 
-# Настройки из твоего старого кода
-LOG_FILE = "ai_bot_logs.json"
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8599073108:AAGxNlkRuWIrTz5IoDv4EQy53gsEAjlJRTQ")
+# --- НАСТРОЙКИ ---
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN")
+# Сюда вставь свою ссылку от Render после первого деплоя
+RENDER_URL = "https://api-render-ssdf.onrender.com/" 
 
-# Инициализация
-app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Твой класс Logger
-if not os.path.exists(LOG_FILE):
-    with open(LOG_FILE, 'w', encoding='utf-8') as f:
-        json.dump([], f, ensure_ascii=False)
+# Модель Qwen 2.5 72B — мощная, бесплатная на HF и идеально знает русский
+client = AsyncInferenceClient("Qwen/Qwen2.5-72B-Instruct", token=HF_TOKEN)
 
-async def get_ai_response(message):
-    try:
-        # Бесплатный GPT-4 через g4f вместо локальной Ollama
-        response = await g4f.ChatCompletion.create_async(
-            model=g4f.models.gpt_4,
-            messages=[{"role": "user", "content": message}],
-        )
-        return response
-    except Exception as e:
-        return f"Ошибка ИИ: {e}"
+# --- ФУНКЦИЯ КИП-АЛАЙВ (ЧТОБЫ НЕ СПАЛ) ---
+async def keep_alive():
+    async with httpx.AsyncClient() as http_client:
+        while True:
+            try:
+                await http_client.get(RENDER_URL)
+                print(f"[{datetime.now()}] Self-ping successful")
+            except Exception as e:
+                print(f"[{datetime.now()}] Self-ping failed: {e}")
+            await asyncio.sleep(600)  # Пинг раз в 10 минут
 
-@app.post("/chat")
-async def web_chat(request: Request):
-    data = await request.json()
-    user_message = data.get("text", "")
-    answer = await get_ai_response(user_message)
-    return {"success": True, "answer": answer}
+# --- ОБРАБОТКА КОМАНД ---
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    await message.answer("Я жив! Твой личный ИИ на базе Hugging Face готов к работе. Пиши любой вопрос.")
 
+# --- ОБРАБОТКА СООБЩЕНИЙ ---
 @dp.message()
-async def handle_tg(message: types.Message):
-    await bot.send_chat_action(message.chat.id, "typing")
-    answer = await get_ai_response(message.text)
-    await message.answer(answer)
+async def chat_handler(message: types.Message):
+    if not message.text:
+        return
 
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(dp.start_polling(bot))
+    # Отправляем временный статус
+    status_msg = await message.answer("🤖 Печатает...")
+
+    try:
+        response_text = ""
+        # Стриминг ответа от модели
+        async for token in client.chat_completion(
+            messages=[
+                {"role": "system", "content": "Ты — крутой и остроумный ИИ-помощник. Отвечай всегда на русском языке."},
+                {"role": "user", "content": message.text}
+            ],
+            max_tokens=1000,
+            stream=True
+        ):
+            chunk = token.choices[0].delta.content or ""
+            response_text += chunk
+
+        # Редактируем сообщение финальным текстом
+        if response_text.strip():
+            await status_msg.edit_text(response_text)
+        else:
+            await status_msg.edit_text("Модель прислала пустой ответ. Попробуй еще раз.")
+
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Ошибка нейронки: {e}")
+
+# --- ЗАПУСК ---
+async def main():
+    print("Бот запускается...")
+    # Запускаем пинг в фоновом режиме
+    asyncio.create_task(keep_alive())
+    # Запускаем бота
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import uvicorn
-    # Порт 7860 обязателен для работы в Spaces
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот остановлен")
