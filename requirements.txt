@@ -1,8 +1,3 @@
-fastapi
-uvicorn
 aiogram
-g4f
-curl_cffi
-python-multipart
-requests
-flask-cors
+huggingface_hub
+httpx
